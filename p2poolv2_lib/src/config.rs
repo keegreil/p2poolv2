@@ -82,6 +82,12 @@ pub struct StratumConfig<State = Raw> {
     /// Optional path to JSON file for fixed payouts (e.g., "/tmp/payouts.json"). If set, overrides PPLNS.
     #[serde(default)]
     pub payout_file_path: Option<String>,
+    /// Optional URL for fetching external payouts (e.g., "https://pool.example.com/api/payouts")
+    #[serde(default)]
+    pub downstream_payout_url: Option<String>,
+    /// Refresh interval for payout fetches (seconds; default 30)
+    #[serde(default = "default_payout_refresh_interval")]
+    pub payout_refresh_interval: u64,
 
     #[serde(skip)]
     #[serde(default)]
@@ -132,6 +138,8 @@ impl StratumConfig<Raw> {
             donation_address_parsed,
             fee_address_parsed,
             payout_file_path: self.payout_file_path,
+            downstream_payout_url: self.downstream_payout_url,
+            payout_refresh_interval: self.payout_refresh_interval,
             _state: PhantomData,
         })
     }
@@ -182,9 +190,16 @@ impl StratumConfig<Raw> {
             donation_address_parsed: None,
             fee_address_parsed: None,
             payout_file_path: None,
+            downstream_payout_url: None,
+            payout_refresh_interval: 30,
             _state: PhantomData,
         }
     }
+}
+
+// Add this free fn outside the impls (near other defaults like donation_address)
+fn default_payout_refresh_interval() -> u64 {
+    30
 }
 
 /// helper function to deserialize the network from the config file, which is provided as a string like Core
