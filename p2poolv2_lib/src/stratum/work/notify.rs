@@ -19,7 +19,7 @@ use super::coinbase::{build_coinbase_transaction, split_coinbase};
 use super::error::WorkError;
 use super::gbt::build_merkle_branches_for_template;
 use super::tracker::{JobId, TrackerHandle};
-use crate::accounting::OutputPair;
+use crate::accounting::{self, OutputPair};
 use crate::accounting::simple_pplns::payout::Payout;
 use crate::config::StratumConfig;
 #[cfg(test)]
@@ -38,6 +38,11 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::debug;
+use std::fs;
+use std::str::FromStr; 
+use serde_json::{self, Value};  // Already available
+use crate::stratum::work::coinbase::parse_address; 
+///use crate::accounting::OutputPair;  // Brings the alias into scope
 
 #[cfg(not(test))]
 use crate::stratum::client_connections::ClientConnectionsHandle;
@@ -65,7 +70,18 @@ async fn build_output_distribution(
     store: &Arc<ChainStore>,
     config: &StratumConfig<crate::config::Parsed>,
 ) -> Vec<OutputPair> {
-    const DEFAULT_STEP_SIZE_SECONDS: u64 = 24 * 60 * 60; // 1 day
+    // New: Try file mode if path set
+    if let Some(ref path) = config.payout_file_path {
+        match load_payouts_from_file(path, template.coinbasevalue, config).await {
+            Ok(dist) => return dist,
+            Err(e) => {
+                debug!("File payout load failed ({}): {}; falling back to PPLNS", path, e);
+            }
+        }
+    }
+
+    // Original PPLNS fallback (unchanged)
+    const DEFAULT_STEP_SIZE_SECONDS: u64 = 24 * 60 * 60;
     let payout = Payout::new(DEFAULT_STEP_SIZE_SECONDS);
     let total_amount = bitcoin::Amount::from_sat(template.coinbasevalue);
 
@@ -85,6 +101,57 @@ async fn build_output_distribution(
             Vec::new()
         }
     }
+}
+
+// New helper: Synchronous file load + parse (no async needed for fs::read)
+async fn load_payouts_from_file(
+    path: &str,
+    coinbase_sats: u64,
+    config: &StratumConfig<crate::config::Parsed>,
+) -> Result<Vec<OutputPair>, Box<dyn std::error::Error>> {
+    let content = fs::read_to_string(path)?;
+    let json: Value = serde_json::from_str(&content)?;
+
+    // Extract WinnersList
+    let winners: Vec<OutputPair> = json["WinnersList"]
+    .as_array()
+    .ok_or("Missing or invalid WinnersList")?
+    .iter()
+    .map(|entry| {
+        let addr_str = entry["Address"].as_str().ok_or("Missing Address")?.to_string();
+        let value_sat: u64 = entry["Value"].as_u64().ok_or("Invalid Value")?;
+        let addr = parse_address(&addr_str, config.network).map_err(|e| format!("Parse error for '{}': {}", addr_str, e.message))?;
+        // Add turbofish to Ok for type hint (E inferred from map_err)
+        Ok::<_, Box<dyn std::error::Error>>(OutputPair {
+            address: addr,
+            amount: bitcoin::Amount::from_sat(value_sat),
+        })
+    })
+    .collect::<Result<Vec<OutputPair>, _>>()?;
+
+    if winners.is_empty() {
+        return Err("No winners in file".into());
+    }
+
+    let total_amount = bitcoin::Amount::from_sat(coinbase_sats);
+    let mut distribution: Vec<OutputPair> = Vec::new();
+    let mut remaining = total_amount;
+
+    // Struct pattern for destructuring
+    let sum_winners_sat: u64 = winners.iter().map(|OutputPair { amount: a, .. }| a.to_sat()).sum();
+    let rem_sat = remaining.to_sat();
+    if sum_winners_sat > rem_sat {
+        return Err(format!("Winners sum {} > remaining {} sats", sum_winners_sat, rem_sat).into());
+    }
+    distribution.extend(winners);  // Uniform: Vec<OutputPair>
+    let leftover = rem_sat.saturating_sub(sum_winners_sat);
+    if leftover > 0 {
+        distribution.push(OutputPair {
+            address: config.bootstrap_address().clone(),
+            amount: bitcoin::Amount::from_sat(leftover),
+        });
+    }
+    Ok(distribution)
 }
 
 #[allow(dead_code)]

@@ -70,6 +70,7 @@ pub struct StratumConfig<State = Raw> {
     pub difficulty_multiplier: f64,
     /// Optional pool signature to include in coinbase
     pub pool_signature: Option<String>,
+    
 
     // Parsed addresses - only available when State = Parsed
     #[serde(skip)]
@@ -78,6 +79,9 @@ pub struct StratumConfig<State = Raw> {
     pub(crate) donation_address_parsed: Option<Address<NetworkChecked>>,
     #[serde(skip)]
     pub(crate) fee_address_parsed: Option<Address<NetworkChecked>>,
+    /// Optional path to JSON file for fixed payouts (e.g., "/tmp/payouts.json"). If set, overrides PPLNS.
+    #[serde(default)]
+    pub payout_file_path: Option<String>,
 
     #[serde(skip)]
     #[serde(default)]
@@ -127,6 +131,7 @@ impl StratumConfig<Raw> {
             bootstrap_address_parsed: Some(bootstrap_address_parsed),
             donation_address_parsed,
             fee_address_parsed,
+            payout_file_path: self.payout_file_path,
             _state: PhantomData,
         })
     }
@@ -176,6 +181,7 @@ impl StratumConfig<Raw> {
             bootstrap_address_parsed: None,
             donation_address_parsed: None,
             fee_address_parsed: None,
+            payout_file_path: None,
             _state: PhantomData,
         }
     }
