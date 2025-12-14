@@ -269,12 +269,28 @@ impl ShareBlock {
         )
         .unwrap()
         .into();
-        let block_hex = hex::decode(genesis_data.bitcoin_block_hex).unwrap();
+
+        let block_hex_str = &genesis_data.bitcoin_block_hex;
+        println!("DEBUG: Network: {:?}", network);
+        println!("DEBUG: Genesis hex string: {}", block_hex_str);
+        println!("DEBUG: Hex string length: {} (should be ~570 for mainnet)", block_hex_str.len());
+
+        let block_hex = match hex::decode(block_hex_str) {
+            Ok(bytes) => {
+                println!("DEBUG: Decoded byte length: {} (should be ~285 for mainnet genesis block)", bytes.len());
+                bytes
+            }
+            Err(e) => {
+                println!("DEBUG: Hex decode failed: {:?}", e);
+                panic!("Invalid genesis hex");
+            }
+        };
+
         // panic here, as if the genesis block is bad, we bail at the start of the process
         let block: Block = match bitcoin::consensus::deserialize(&block_hex) {
             Ok(block) => block,
             Err(e) => {
-                println!("Failed to deserialize genesis block: {e}");
+                println!("DEBUG: Failed to deserialize genesis block: {:?}", e);  // Shows full error (e.g., Io(UnexpectedEof))
                 panic!("Invalid genesis block data");
             }
         };

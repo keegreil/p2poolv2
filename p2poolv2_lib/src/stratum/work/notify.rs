@@ -112,47 +112,58 @@ async fn load_payouts_from_file(
     let content = fs::read_to_string(path)?;
     let json: Value = serde_json::from_str(&content)?;
 
-    // Extract WinnersList
-    let winners: Vec<OutputPair> = json["WinnersList"]
-    .as_array()
-    .ok_or("Missing or invalid WinnersList")?
-    .iter()
-    .map(|entry| {
-        let addr_str = entry["Address"].as_str().ok_or("Missing Address")?.to_string();
-        let value_sat: u64 = entry["Value"].as_u64().ok_or("Invalid Value")?;
-        let addr = parse_address(&addr_str, config.network).map_err(|e| format!("Parse error for '{}': {}", addr_str, e.message))?;
-        // Add turbofish to Ok for type hint (E inferred from map_err)
-        Ok::<_, Box<dyn std::error::Error>>(OutputPair {
-            address: addr,
-            amount: bitcoin::Amount::from_sat(value_sat),
+    // 1. Updated Key: extract "payouts" instead of "WinnersList"
+    // 2. Renamed variable: 'winners' -> 'external_payouts'
+    let external_payouts: Vec<OutputPair> = json["payouts"]
+        .as_array()
+        .ok_or("Missing or invalid 'payouts' list")?
+        .iter()
+        .map(|entry| {
+            let addr_str = entry["Address"].as_str().ok_or("Missing Address")?.to_string();
+            let value_sat: u64 = entry["Value"].as_u64().ok_or("Invalid Value")?;
+
+            // Assuming parse_address is available in scope as per your previous code
+            let addr = parse_address(&addr_str, config.network)
+                .map_err(|e| format!("Parse error for '{}': {}", addr_str, e.message))?;
+
+            Ok::<_, Box<dyn std::error::Error>>(OutputPair {
+                address: addr,
+                amount: bitcoin::Amount::from_sat(value_sat),
+            })
         })
-    })
-    .collect::<Result<Vec<OutputPair>, _>>()?;
+        .collect::<Result<Vec<OutputPair>, _>>()?;
 
-    if winners.is_empty() {
-        return Err("No winners in file".into());
+    if external_payouts.is_empty() {
+        return Err("No payouts found in file".into());
     }
 
-    let total_amount = bitcoin::Amount::from_sat(coinbase_sats);
-    let mut distribution: Vec<OutputPair> = Vec::new();
-    let mut remaining = total_amount;
+    // Pre-allocate vector with space for payouts + 1 potential bootstrap output
+    let mut distribution: Vec<OutputPair> = Vec::with_capacity(external_payouts.len() + 1);
 
-    // Struct pattern for destructuring
-    let sum_winners_sat: u64 = winners.iter().map(|OutputPair { amount: a, .. }| a.to_sat()).sum();
-    let rem_sat = remaining.to_sat();
-    if sum_winners_sat > rem_sat {
-        return Err(format!("Winners sum {} > remaining {} sats", sum_winners_sat, rem_sat).into());
+    // Calculate sums
+    let sum_payouts_sat: u64 = external_payouts.iter().map(|OutputPair { amount: a, .. }| a.to_sat()).sum();
+    
+    if sum_payouts_sat > coinbase_sats {
+        return Err(format!("Payouts sum {} > coinbase total {} sats", sum_payouts_sat, coinbase_sats).into());
     }
-    distribution.extend(winners);  // Uniform: Vec<OutputPair>
-    let leftover = rem_sat.saturating_sub(sum_winners_sat);
-    if leftover > 0 {
+
+    // 3. Logic Change: Calculate leftover and insert it FIRST
+    let leftover_sat = coinbase_sats.saturating_sub(sum_payouts_sat);
+
+    if leftover_sat > 0 {
         distribution.push(OutputPair {
             address: config.bootstrap_address().clone(),
-            amount: bitcoin::Amount::from_sat(leftover),
+            amount: bitcoin::Amount::from_sat(leftover_sat),
         });
     }
+
+    // 4. Append the external payouts after the bootstrap transaction
+    distribution.extend(external_payouts);
+
     Ok(distribution)
 }
+
+
 
 #[allow(dead_code)]
 pub fn build_notify(
